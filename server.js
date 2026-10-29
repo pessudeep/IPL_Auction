@@ -12,7 +12,6 @@ const PORT = process.env.PORT || 3000;
 const MAX_PLAYERS = 10;
 const MAX_AUCTION_PLAYERS = 2000;
 const NEXT_BID_AFTER_SALE_SECONDS = 10;
-const RECONNECT_GRACE_PERIOD_MS = 24 * 60 * 60 * 1000;
 const VALID_BID_TIMES = [10, 20, 30];
 const VALID_PURSES = [100, 120, 140, 150];
 const TEAMS = [
@@ -40,7 +39,6 @@ const TEAM_NAMES = {
   SRH: "Sunrisers Hyderabad",
 };
 const rooms = new Map();
-const activeSockets = new Map();
 
 app.use(express.static(path.join(__dirname, "public")));
 app.get("/health", (_request, response) => response.json({ status: "ok" }));
@@ -54,30 +52,22 @@ function createRoomCode() {
   return code;
 }
 
-function roomAdminId(room) {
-  const admin = room.players.get(room.adminId);
-  if (admin?.connected) return admin.id;
-  return [...room.players.values()].find((player) => player.connected)?.id || room.adminId;
-}
-
-function playerSnapshot(player, adminId) {
+function playerSnapshot(player) {
   return {
     id: player.id,
     name: player.name,
     team: player.team,
-    isAdmin: player.id === adminId,
-    connected: player.connected,
+    isAdmin: player.isAdmin,
   };
 }
 
 function roomSnapshot(room) {
   const auction = room.auction;
-  const adminId = roomAdminId(room);
   return {
     code: room.code,
-    adminId,
+    adminId: room.adminId,
     settings: { ...room.settings },
-    players: [...room.players.values()].map((player) => playerSnapshot(player, adminId)),
+    players: [...room.players.values()].map(playerSnapshot),
     started: room.started,
     rosterCount: room.playerList.length,
     auction: auction ? {
@@ -122,55 +112,8 @@ function reply(callback, result) {
 function playerRoom(socket) {
   const code = socket.data.roomCode;
   const room = code && rooms.get(code);
-  const player = room && room.players.get(socket.data.playerId);
+  const player = room && room.players.get(socket.id);
   return room && player ? { room, player } : null;
-}
-
-function emitToPlayer(playerId, event, payload) {
-  const socketId = activeSockets.get(playerId);
-  if (socketId) io.to(socketId).emit(event, payload);
-}
-
-function removePlayer(room, playerId) {
-  const player = room.players.get(playerId);
-  if (!player) return;
-  clearTimeout(player.reconnectTimer);
-  room.players.delete(playerId);
-  if (room.adminId === playerId) {
-    room.adminId = [...room.players.values()].find((member) => member.connected)?.id
-      || room.players.keys().next().value
-      || "";
-  }
-  if (room.players.size === 0) {
-    if (room.auction) clearTimer(room.auction);
-    rooms.delete(room.code);
-    return;
-  }
-  broadcastRoom(room);
-}
-
-function resumePlayer(socket) {
-  const token = socket.data.resumeToken;
-  if (!token) return;
-  for (const room of rooms.values()) {
-    const player = [...room.players.values()].find((candidate) => candidate.resumeToken === token);
-    if (!player) continue;
-
-    const previousSocketId = activeSockets.get(player.id);
-    if (previousSocketId && previousSocketId !== socket.id) {
-      io.sockets.sockets.get(previousSocketId)?.disconnect(true);
-    }
-    activeSockets.set(player.id, socket.id);
-    socket.data.playerId = player.id;
-    socket.data.roomCode = room.code;
-    player.connected = true;
-    clearTimeout(player.reconnectTimer);
-    player.reconnectTimer = null;
-    socket.join(room.code);
-    socket.emit("session:restored", { playerId: player.id });
-    broadcastRoom(room);
-    return;
-  }
 }
 
 function addActivity(room, message, kind = "system") {
@@ -340,8 +283,8 @@ function finishAuction(room) {
 
 function clearPendingTrades(room, message) {
   for (const trade of room.pendingTrades.values()) {
-    emitToPlayer(trade.requesterId, "trade:result", { ok: false, message });
-    emitToPlayer(trade.recipientId, "trade:cancelled", { tradeId: trade.id, message });
+    io.to(trade.requesterId).emit("trade:result", { ok: false, message });
+    io.to(trade.recipientId).emit("trade:cancelled", { tradeId: trade.id, message });
   }
   room.pendingTrades.clear();
 }
@@ -437,32 +380,14 @@ const defaultPlayerListResult = defaultPlayerData ? validatePlayerList(defaultPl
 if (defaultPlayerListResult.error) throw new Error(`Invalid default auction roster: ${defaultPlayerListResult.error}`);
 
 io.on("connection", (socket) => {
-  const auth = socket.handshake.auth || {};
-  const isUuid = (value) => typeof value === "string"
-    && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
-  socket.data.resumeToken = isUuid(auth.resumeToken)
-    ? auth.resumeToken
-    : "";
-  socket.data.playerId = null;
-  resumePlayer(socket);
-
   socket.on("room:create", (callback) => {
     if (playerRoom(socket)) return reply(callback, { ok: false, error: "Leave your current room before creating another." });
     const code = createRoomCode();
-    const playerId = crypto.randomUUID();
-    socket.data.playerId = playerId;
     const room = {
       code,
-      adminId: playerId,
+      adminId: socket.id,
       settings: { bidTime: 20, purse: 100 },
-      players: new Map([[playerId, {
-        id: playerId,
-        resumeToken: socket.data.resumeToken,
-        name: "",
-        team: "",
-        connected: true,
-        reconnectTimer: null,
-      }]]),
+      players: new Map([[socket.id, { id: socket.id, name: "", team: "", isAdmin: true }]]),
       playerList: defaultPlayerListResult.players.map((player) => ({
         ...player,
         id: crypto.randomUUID(),
@@ -473,9 +398,8 @@ io.on("connection", (socket) => {
     };
     rooms.set(code, room);
     socket.data.roomCode = code;
-    activeSockets.set(playerId, socket.id);
     socket.join(code);
-    reply(callback, { ok: true, playerId, room: roomSnapshot(room) });
+    reply(callback, { ok: true, room: roomSnapshot(room) });
   });
 
   socket.on("room:join", (rawCode, callback) => {
@@ -486,42 +410,11 @@ io.on("connection", (socket) => {
     if (room.players.size >= MAX_PLAYERS) return reply(callback, { ok: false, error: "This room is full (10 players maximum)." });
     if (playerRoom(socket)) return reply(callback, { ok: false, error: "You are already in a room." });
 
-    const playerId = crypto.randomUUID();
-    socket.data.playerId = playerId;
-    room.players.set(playerId, {
-      id: playerId,
-      resumeToken: socket.data.resumeToken,
-      name: "",
-      team: "",
-      connected: true,
-      reconnectTimer: null,
-    });
+    room.players.set(socket.id, { id: socket.id, name: "", team: "", isAdmin: false });
     socket.data.roomCode = code;
-    activeSockets.set(playerId, socket.id);
     socket.join(code);
     broadcastRoom(room);
-    reply(callback, { ok: true, playerId, room: roomSnapshot(room) });
-  });
-
-  socket.on("room:leave", (callback) => {
-    const membership = playerRoom(socket);
-    if (!membership) return reply(callback, { ok: true });
-    const { room, player } = membership;
-    for (const [tradeId, trade] of room.pendingTrades) {
-      if (trade.requesterId === player.id || trade.recipientId === player.id) {
-        room.pendingTrades.delete(tradeId);
-        const otherPlayerId = trade.requesterId === player.id ? trade.recipientId : trade.requesterId;
-        emitToPlayer(otherPlayerId, "trade:cancelled", {
-          tradeId: trade.id,
-          message: "The other manager left the room. The trade request was cancelled.",
-        });
-      }
-    }
-    activeSockets.delete(player.id);
-    socket.data.roomCode = null;
-    socket.leave(room.code);
-    removePlayer(room, player.id);
-    reply(callback, { ok: true });
+    reply(callback, { ok: true, room: roomSnapshot(room) });
   });
 
   socket.on("player:update", (input, callback) => {
@@ -547,7 +440,7 @@ io.on("connection", (socket) => {
     const membership = playerRoom(socket);
     if (!membership) return reply(callback, { ok: false, error: "Join a room before changing settings." });
     const { room, player } = membership;
-    if (roomAdminId(room) !== player.id) return reply(callback, { ok: false, error: "Only the room admin can change settings." });
+    if (!player.isAdmin) return reply(callback, { ok: false, error: "Only the room admin can change settings." });
     if (room.started) return reply(callback, { ok: false, error: "Settings are locked because the auction has started." });
     if (!VALID_BID_TIMES.includes(Number(settings?.bidTime)) || !VALID_PURSES.includes(Number(settings?.purse))) {
       return reply(callback, { ok: false, error: "Choose a valid bid time and purse." });
@@ -562,7 +455,7 @@ io.on("connection", (socket) => {
     const membership = playerRoom(socket);
     if (!membership) return reply(callback, { ok: false, error: "Join a room before loading the player list." });
     const { room, player } = membership;
-    if (roomAdminId(room) !== player.id) return reply(callback, { ok: false, error: "Only the admin can load the player list." });
+    if (!player.isAdmin) return reply(callback, { ok: false, error: "Only the admin can load the player list." });
     if (room.started) return reply(callback, { ok: false, error: "The auction has already started." });
     const result = validatePlayerList(rawPlayers);
     if (result.error) return reply(callback, { ok: false, error: result.error });
@@ -576,7 +469,7 @@ io.on("connection", (socket) => {
     const membership = playerRoom(socket);
     if (!membership) return reply(callback, { ok: false, error: "Join a room before starting the auction." });
     const { room, player } = membership;
-    if (roomAdminId(room) !== player.id) return reply(callback, { ok: false, error: "Only the room admin can start the auction." });
+    if (!player.isAdmin) return reply(callback, { ok: false, error: "Only the room admin can start the auction." });
     if (room.started) return reply(callback, { ok: false, error: "The auction has already started." });
     if (room.players.size < 2) return reply(callback, { ok: false, error: "At least 2 players are required to start." });
     if ([...room.players.values()].some((member) => !member.name || !member.team)) {
@@ -592,7 +485,7 @@ io.on("connection", (socket) => {
     const membership = playerRoom(socket);
     if (!membership) return reply(callback, { ok: false, error: "Join the room before ending the auction." });
     const { room, player } = membership;
-    if (roomAdminId(room) !== player.id) {
+    if (!player.isAdmin || room.adminId !== socket.id) {
       return reply(callback, { ok: false, error: "Only the room admin can end the auction." });
     }
     if (!room.auction || room.auction.phase === "finished" || room.auction.phase === "cancelled") {
@@ -623,13 +516,13 @@ io.on("connection", (socket) => {
     const recipient = [...room.players.values()].find((candidate) => candidate.team === targetTeam.code);
     if (!recipient) return reply(callback, { ok: false, error: "That team's manager is not available." });
     if ([...room.pendingTrades.values()].some((trade) =>
-      trade.requesterId === player.id || trade.recipientId === recipient.id)) {
+      trade.requesterId === socket.id || trade.recipientId === recipient.id)) {
       return reply(callback, { ok: false, error: "You or that manager already has a pending trade request." });
     }
 
     const trade = {
       id: crypto.randomUUID(),
-      requesterId: player.id,
+      requesterId: socket.id,
       recipientId: recipient.id,
       requesterName: player.name,
       sourceTeam: sourceTeam.code,
@@ -640,7 +533,7 @@ io.on("connection", (socket) => {
       targetPlayerName: targetPlayer.name,
     };
     room.pendingTrades.set(trade.id, trade);
-    emitToPlayer(recipient.id, "trade:request", {
+    io.to(recipient.id).emit("trade:request", {
       id: trade.id,
       requesterName: trade.requesterName,
       sourceTeam: trade.sourceTeam,
@@ -656,7 +549,7 @@ io.on("connection", (socket) => {
     if (!membership) return reply(callback, { ok: false, error: "Join the room before responding to a trade." });
     const { room } = membership;
     const trade = room.pendingTrades.get(input?.tradeId);
-    if (!trade || trade.recipientId !== socket.data.playerId) {
+    if (!trade || trade.recipientId !== socket.id) {
       return reply(callback, { ok: false, error: "That trade request is no longer available." });
     }
     room.pendingTrades.delete(trade.id);
@@ -668,14 +561,14 @@ io.on("connection", (socket) => {
     const targetIndex = targetTeam?.squad.findIndex((item) => item.id === trade.targetPlayerId) ?? -1;
     if (!room.started || !auction || auction.phase === "cancelled" || sourceIndex < 0 || targetIndex < 0) {
       const error = "The trade could not be completed because a player or the auction is no longer available.";
-      emitToPlayer(trade.requesterId, "trade:result", { ok: false, message: error });
+      io.to(trade.requesterId).emit("trade:result", { ok: false, message: error });
       return reply(callback, { ok: false, error });
     }
 
     if (input?.accept !== true) {
       const message = `${trade.targetTeam} declined the trade for ${trade.targetPlayerName}.`;
       addActivity(room, message, "trade");
-      emitToPlayer(trade.requesterId, "trade:result", { ok: true, accepted: false, message });
+      io.to(trade.requesterId).emit("trade:result", { ok: true, accepted: false, message });
       broadcastRoom(room);
       return reply(callback, { ok: true });
     }
@@ -684,7 +577,7 @@ io.on("connection", (socket) => {
       [targetTeam.squad[targetIndex], sourceTeam.squad[sourceIndex]];
     const message = `${trade.sourceTeam} and ${trade.targetTeam} traded ${trade.sourcePlayerName} for ${trade.targetPlayerName}.`;
     addActivity(room, message, "trade");
-    emitToPlayer(trade.requesterId, "trade:result", { ok: true, accepted: true, message });
+    io.to(trade.requesterId).emit("trade:result", { ok: true, accepted: true, message });
     broadcastRoom(room);
     reply(callback, { ok: true });
   });
@@ -788,30 +681,34 @@ io.on("connection", (socket) => {
   socket.on("disconnect", () => {
     const membership = playerRoom(socket);
     if (!membership) return;
-    const { room, player } = membership;
-    if (activeSockets.get(player.id) !== socket.id) return;
-    activeSockets.delete(player.id);
+    const { room } = membership;
     for (const [tradeId, trade] of room.pendingTrades) {
-      if (trade.requesterId === player.id || trade.recipientId === player.id) {
+      if (trade.requesterId === socket.id || trade.recipientId === socket.id) {
         room.pendingTrades.delete(tradeId);
-        if (trade.requesterId !== player.id) {
-          emitToPlayer(trade.requesterId, "trade:result", {
+        if (trade.requesterId !== socket.id) {
+          io.to(trade.requesterId).emit("trade:result", {
             ok: false,
             message: "The other manager disconnected. The trade request was cancelled.",
           });
         } else {
-          emitToPlayer(trade.recipientId, "trade:cancelled", {
+          io.to(trade.recipientId).emit("trade:cancelled", {
             tradeId: trade.id,
             message: "The requesting manager disconnected. The trade request was cancelled.",
           });
         }
       }
     }
-    player.connected = false;
-    player.reconnectTimer = setTimeout(
-      () => removePlayer(room, player.id),
-      RECONNECT_GRACE_PERIOD_MS,
-    );
+    room.players.delete(socket.id);
+    if (room.players.size === 0) {
+      if (room.auction) clearTimer(room.auction);
+      rooms.delete(room.code);
+      return;
+    }
+    if (room.adminId === socket.id) {
+      const nextAdmin = room.players.values().next().value;
+      nextAdmin.isAdmin = true;
+      room.adminId = nextAdmin.id;
+    }
     broadcastRoom(room);
   });
 });

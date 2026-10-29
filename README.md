@@ -9,7 +9,7 @@ A mobile-friendly, real-time IPL auction lobby. Players can create or join a roo
 3. Run `npm start`.
 4. Open `http://localhost:3000` on your device or computer. For testing on a phone on the same Wi-Fi, open the computer's local network IP on port `3000`.
 
-The room code can be shared with other players who can reach the same server. If you close the tab or switch apps and get disconnected, reopen the game in the same browser within 24 hours to restore your player and room. Room state is held in server memory, so a server restart or Render free-service spin-down still clears rooms and auction progress.
+The room code can be shared with other players who can reach the same server. Room state is held in server memory and is cleared when the server restarts.
 
 ## Deploy and share a URL
 
@@ -54,4 +54,4 @@ The linked Cricinfo page is not accessible to this app in the current environmen
 - When a player is sold, the winning team's song from `public/songs/` plays in the background while the next player appears immediately with a 10-second bid timer.
 - If a player has a previous team, that team gets an RTM decision after the bid timer expires. The team has 20 seconds to select an available RTM card, then 20 seconds to enter a bid at least ₹0.25 crore above the current bid, in ₹0.25 crore steps. Other bidders see which team is using RTM while the decision is pending. The submitted RTM bid becomes the new high bid and regular bidding resumes; if another team outbids it, the previous team can use another available RTM activation.
 - Bid activity, RTM actions, and sale results appear in the Chat & activity tab. The Teams tab shows remaining purses and acquired players.
-- Disconnected players can rejoin from the same browser for up to 24 hours; their room slot and team stay reserved during that time. Rooms and auction state are held in server memory and are cleared when the server restarts.
+- Rooms and auction state are held in server memory and are cleared when the server restarts.

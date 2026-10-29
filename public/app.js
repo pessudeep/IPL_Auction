@@ -1,23 +1,4 @@
-const PLAYER_SESSION_STORAGE_KEY = "ipl-auction-player-session-v1";
-const isUuid = (value) => typeof value === "string"
-  && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
-let playerSession;
-try {
-  playerSession = JSON.parse(localStorage.getItem(PLAYER_SESSION_STORAGE_KEY));
-} catch {
-  playerSession = null;
-}
-if (!isUuid(playerSession?.resumeToken)) {
-  playerSession = { playerId: null, resumeToken: crypto.randomUUID() };
-  localStorage.setItem(PLAYER_SESSION_STORAGE_KEY, JSON.stringify(playerSession));
-}
-const socket = io({ auth: { resumeToken: playerSession.resumeToken } });
-
-function savePlayerId(playerId) {
-  if (!isUuid(playerId)) return;
-  playerSession.playerId = playerId;
-  localStorage.setItem(PLAYER_SESSION_STORAGE_KEY, JSON.stringify(playerSession));
-}
+const socket = io();
 const teams = [
   { code: "CSK", name: "Chennai", color: "#e5bd45" },
   { code: "DC", name: "Delhi", color: "#4b8fd8" },
@@ -152,7 +133,7 @@ function renderTeams() {
   const players = currentRoom.players;
   teamGrid.innerHTML = teams.map((team) => {
     const owner = players.find((player) => player.team === team.code);
-    const isMine = owner?.id === playerSession.playerId;
+    const isMine = owner?.id === socket.id;
     const isTaken = Boolean(owner) && !isMine;
     const isSelected = selectedTeam === team.code;
     const disabled = isTaken || currentRoom.started;
@@ -171,10 +152,10 @@ function renderRoster() {
   roster.innerHTML = players.length
     ? players.map((player) => {
       const team = teams.find((entry) => entry.code === player.team);
-      const name = player.name || (player.id === playerSession.playerId ? "You — choose a team" : "Choosing a team…");
+      const name = player.name || (player.id === socket.id ? "You — choose a team" : "Choosing a team…");
       return `<div class="roster-player">
         <span class="roster-icon" style="--team-color:${colorFor(player.team)}">${player.team || "?"}</span>
-        <span class="roster-player-copy"><strong>${escapeHtml(name)}</strong><small>${team ? team.name : "No team selected"}${player.connected ? "" : " · OFFLINE (CAN REJOIN)"}</small></span>
+        <span class="roster-player-copy"><strong>${escapeHtml(name)}</strong><small>${team ? team.name : "No team selected"}</small></span>
         ${player.isAdmin ? '<span class="admin-tag">ADMIN</span>' : ""}
       </div>`;
     }).join("")
@@ -193,7 +174,7 @@ function renderRoom(room) {
   auctionScreen.classList.add("hidden");
   lobbyScreen.classList.remove("hidden");
   document.querySelector("#room-code-display").textContent = room.code;
-  settingsCard.classList.toggle("hidden", room.adminId !== playerSession.playerId);
+  settingsCard.classList.toggle("hidden", room.adminId !== socket.id);
   const bidTime = document.querySelector("#bid-time");
   const purse = document.querySelector("#purse");
   bidTime.value = String(room.settings.bidTime);
@@ -204,7 +185,7 @@ function renderRoom(room) {
   renderTeams();
   renderRoster();
   const completePlayers = room.players.filter((player) => player.name && player.team).length;
-  startButton.disabled = room.adminId !== playerSession.playerId || room.players.length < 2 || completePlayers !== room.players.length || room.rosterCount === 0;
+  startButton.disabled = room.adminId !== socket.id || room.players.length < 2 || completePlayers !== room.players.length || room.rosterCount === 0;
   document.querySelector("#start-hint").textContent = room.rosterCount === 0
     ? "Upload the player list before starting."
     : room.players.length < 2
@@ -215,7 +196,7 @@ function renderRoom(room) {
   document.querySelector("#upload-status").textContent = room.rosterCount
     ? `${room.rosterCount} auction players loaded.`
     : "No player list uploaded.";
-  document.querySelector("#player-file").disabled = room.adminId !== playerSession.playerId;
+  document.querySelector("#player-file").disabled = room.adminId !== socket.id;
 }
 
 function formatCrore(amount) {
@@ -226,7 +207,7 @@ function renderAuction(room) {
   const auction = room.auction;
   if (!auction) return;
   const player = auction.currentPlayer;
-  const me = room.players.find((member) => member.id === playerSession.playerId);
+  const me = room.players.find((member) => member.id === socket.id);
   const myTeam = me?.team || "";
   const myTeamState = auction.teams.find((team) => team.code === myTeam);
   const playerTeam = player?.previousTeam || "";
@@ -256,7 +237,7 @@ function renderAuction(room) {
       : "LIVE AUCTION";
   document.querySelector("#auction-phase-label").textContent = phaseLabel;
   const endAuctionButton = document.querySelector("#end-auction");
-  endAuctionButton.classList.toggle("hidden", room.adminId !== playerSession.playerId || isTerminal);
+  endAuctionButton.classList.toggle("hidden", room.adminId !== socket.id || isTerminal);
   document.querySelector("#auction-progress-text").textContent = player
     ? `PLAYER ${auction.currentIndex + 1} / ${auction.playerCount}`
     : `PLAYERS ${auction.playerCount} / ${auction.playerCount}`;
@@ -438,7 +419,6 @@ document.querySelector("#create-room").addEventListener("click", async () => {
     showMessage(homeMessage, result?.error || "Could not create the room.");
     return;
   }
-  savePlayerId(result.playerId);
   openLobby(result.room);
 });
 
@@ -455,7 +435,6 @@ document.querySelector("#join-room").addEventListener("click", async () => {
     showMessage(homeMessage, result?.error || "Could not join the room.");
     return;
   }
-  savePlayerId(result.playerId);
   openLobby(result.room);
 });
 
@@ -464,13 +443,8 @@ document.querySelector("#room-code").addEventListener("input", (event) => {
   showMessage(homeMessage);
 });
 
-document.querySelector("#leave-room").addEventListener("click", async () => {
-  const result = await send("room:leave");
-  if (!result?.ok) {
-    notify(result?.error || "Could not leave the room. Your session is still saved.");
-    return;
-  }
-  localStorage.removeItem(PLAYER_SESSION_STORAGE_KEY);
+document.querySelector("#leave-room").addEventListener("click", () => {
+  socket.disconnect();
   window.location.reload();
 });
 
@@ -690,7 +664,6 @@ socket.on("trade:result", (result) => {
 });
 
 socket.on("room:update", renderRoom);
-socket.on("session:restored", ({ playerId }) => savePlayerId(playerId));
 socket.on("auction:sold", ({ team }) => playTeamSong(team));
 socket.on("auction:tick", (tick) => {
   if (!currentRoom?.auction) return;
@@ -703,11 +676,8 @@ socket.on("auction:tick", (tick) => {
 });
 socket.on("connect_error", () => {
   if (homeScreen.classList.contains("hidden")) {
-    notify("Connection lost. Reconnecting and restoring your room…");
+    notify("Connection lost. Refresh the page to rejoin the room.");
   } else {
     showMessage(homeMessage, "Unable to connect to the game server. Try refreshing.");
   }
-});
-socket.on("connect", () => {
-  if (currentRoom) notify("Reconnected. Your room has been restored.");
 });
