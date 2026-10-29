@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#10151b">
+    <meta name="description" content="Create or join a multiplayer IPL auction room.">
+    <title>Auction Game</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/socket.io/socket.io.js" defer></script>
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <main id="app">
+      <section class="home-screen" id="home-screen">
+        <div class="brand"><span class="brand-mark">A</span><span>AUCTION<span class="brand-muted">ROOM</span></span></div>
+        <div class="hero">
+          <div class="eyebrow"><span class="live-dot"></span> THE IPL AUCTION STARTS HERE</div>
+          <h1>Pick your team.<br><span>Build your dynasty.</span></h1>
+          <p>Bring your friends together and make every bid count.</p>
+        </div>
+        <div class="home-actions">
+          <button class="button button-primary" id="create-room">Create Room <span aria-hidden="true">→</span></button>
+          <div class="join-row">
+            <label class="sr-only" for="room-code">Room code</label>
+            <input id="room-code" maxlength="6" autocomplete="off" placeholder="ENTER ROOM CODE" aria-label="Room code">
+            <button class="button button-secondary" id="join-room">Join Room</button>
+          </div>
+          <p class="form-message" id="home-message" role="status"></p>
+        </div>
+        <div class="home-foot"><span>10 FRANCHISES</span><span>ONE WINNER</span><span>YOUR RULES</span></div>
+      </section>
+
+      <section class="lobby-screen hidden" id="lobby-screen">
+        <header class="lobby-header">
+          <button class="brand brand-button" id="leave-room" aria-label="Leave room"><span class="brand-mark">A</span><span>AUCTION<span class="brand-muted">ROOM</span></span></button>
+          <div class="room-chip"><span>ROOM CODE</span><strong id="room-code-display"></strong><button id="copy-code" aria-label="Copy room code" title="Copy room code">▢</button></div>
+        </header>
+
+        <section class="lobby-intro">
+          <div><div class="eyebrow"><span class="live-dot"></span> THE DRAFT ROOM</div><h1>Choose your side.</h1><p>Claim a franchise, then get ready to build a champion.</p></div>
+          <div class="player-count"><strong id="player-count">0</strong><span> / 10<br>PLAYERS</span></div>
+        </section>
+
+        <div class="lobby-layout">
+          <section class="team-panel">
+            <div class="section-heading"><div><span class="section-kicker">THE FRANCHISES</span><h2>Pick your team</h2></div><span class="section-note">ONE TEAM PER PLAYER</span></div>
+            <div class="team-stage">
+              <div class="table-center"><span class="table-ball">✦</span><strong>THE<br>AUCTION<br>TABLE</strong><small>IPL · SEASON 01</small></div>
+              <div class="team-grid" id="team-grid" aria-label="IPL teams"></div>
+            </div>
+            <div class="player-form">
+              <div class="field"><label for="player-name">YOUR NAME</label><input id="player-name" maxlength="20" autocomplete="name" placeholder="e.g. Arjun"></div>
+              <button class="button button-primary" id="save-player" disabled>Save my team <span aria-hidden="true">→</span></button>
+            </div>
+            <p class="form-message" id="lobby-message" role="status"></p>
+          </section>
+
+          <aside class="side-panel">
+            <section class="roster-card">
+              <div class="section-heading compact"><div><span class="section-kicker">IN THE ROOM</span><h2>Players</h2></div><span class="roster-count" id="roster-count">0</span></div>
+              <div class="roster-list" id="roster-list"></div>
+            </section>
+            <section class="settings-card hidden" id="settings-card">
+              <div class="section-heading compact"><div><span class="section-kicker">ROOM CONTROL</span><h2>Admin settings</h2></div><span class="admin-label">ADMIN</span></div>
+              <label class="setting-label" for="bid-time">BID TIME</label>
+              <select id="bid-time"><option value="10">10 seconds</option><option value="20">20 seconds</option><option value="30">30 seconds</option></select>
+              <label class="setting-label" for="purse">TEAM PURSE</label>
+              <select id="purse"><option value="100">₹100 crore</option><option value="120">₹120 crore</option><option value="140">₹140 crore</option><option value="150">₹150 crore</option></select>
+              <label class="setting-label" for="player-file">AUCTION PLAYER LIST (JSON)</label>
+              <input class="file-input" id="player-file" type="file" accept=".json,application/json">
+              <p class="upload-hint">Each player needs name, type, basePrice (crore), and optional previousTeam.</p>
+              <p class="upload-status" id="upload-status" role="status">No player list uploaded.</p>
+              <button class="button button-primary start-button" id="start-auction" disabled>Start Auction <span aria-hidden="true">→</span></button>
+              <p class="start-hint" id="start-hint">At least 2 players with teams are needed.</p>
+            </section>
+            <p class="invite-note"><span>↗</span> Share the room code with your friends to invite them.</p>
+          </aside>
+        </div>
+      </section>
+      <section class="auction-screen hidden" id="auction-screen">
+        <header class="lobby-header auction-header">
+          <div class="brand"><span class="brand-mark">A</span><span>AUCTION<span class="brand-muted">ROOM</span></span></div>
+          <div class="auction-header-actions">
+            <div class="auction-room-info"><span id="auction-phase-label">LIVE AUCTION</span><strong id="auction-room-code"></strong></div>
+            <button class="button button-danger hidden" id="end-auction">End Auction</button>
+          </div>
+        </header>
+        <div class="auction-toolbar">
+          <section class="rtm-wallet">
+            <div class="wallet-heading"><span class="section-kicker">YOUR RTM CARDS</span><span class="wallet-team" id="wallet-team"></span></div>
+            <div class="rtm-cards" id="rtm-cards"></div>
+          </section>
+          <section class="purse-wallet">
+            <span class="section-kicker">REMAINING PURSE</span>
+            <strong id="remaining-purse">₹0.00 <small>CR</small></strong>
+            <span class="wallet-team" id="purse-team"></span>
+          </section>
+        </div>
+        <div class="auction-layout">
+          <section class="auction-main">
+            <div class="auction-progress"><span id="auction-progress-text">PLAYER 1 / 1</span><span id="auction-result-count"></span></div>
+            <article class="auction-player-card" id="auction-player-card">
+              <div class="player-card-top"><span class="player-tag">UP FOR AUCTION</span><span class="player-number" id="auction-player-number">01</span></div>
+              <h1 id="auction-player-name">Waiting for player</h1>
+              <div class="player-details">
+                <div><span>TYPE</span><strong id="auction-player-type">—</strong></div>
+                <div><span>PREVIOUS TEAM</span><strong id="auction-player-team"></strong></div>
+                <div><span>BASE PRICE</span><strong id="auction-player-base">—</strong></div>
+              </div>
+            </article>
+            <div class="auction-ended hidden" id="auction-finished">Auction complete. Check the Teams tab for final squads and purse balances.</div>
+            <div class="auction-ended auction-cancelled hidden" id="auction-cancelled">The admin ended this auction. Completed sales are shown in the Teams tab.</div>
+            <section class="bid-board" id="bid-board">
+              <div class="bid-clock"><div class="bid-clock-heading"><span class="section-kicker" id="bid-clock-label">TIME LEFT</span><button class="bid-sound-toggle" id="toggle-bid-sound" type="button" aria-label="Mute countdown sound" aria-pressed="true">Sound on</button></div><strong id="auction-clock">00:00</strong></div>
+              <div class="current-bid"><span class="section-kicker">CURRENT BID</span><strong id="current-bid">—</strong><span id="highest-bid-team">Waiting for first bid</span></div>
+            </section>
+            <div class="auction-actions">
+              <button class="button button-primary bid-button" id="place-bid">Bid <span id="next-bid-amount">base price</span><span aria-hidden="true">↑</span></button>
+              <div class="rtm-response hidden" id="rtm-response">
+                <div class="rtm-prompt"><strong id="rtm-prompt-title">RTM decision</strong><span id="rtm-prompt-description"></span></div>
+                <div class="rtm-choice hidden" id="rtm-choice"></div>
+                <div class="rtm-confirm hidden" id="rtm-confirm">
+                  <label for="rtm-match-amount">YOUR RTM BID (₹ CRORE)</label>
+                  <div><input id="rtm-match-amount" type="number" step="0.25" min="0"><button class="button button-primary" id="confirm-rtm">Submit RTM bid</button></div>
+                </div>
+              </div>
+              <p class="auction-message" id="auction-message" role="status"></p>
+            </div>
+          </section>
+          <aside class="auction-sidebar">
+            <div class="auction-tabs" role="tablist">
+              <button class="auction-tab active" data-tab="chat" role="tab" aria-selected="true">Chat & activity</button>
+              <button class="auction-tab" data-tab="teams" role="tab" aria-selected="false">Teams</button>
+              <button class="auction-tab" data-tab="trade" role="tab" aria-selected="false">Trade</button>
+            </div>
+            <section class="auction-tab-panel" id="chat-panel">
+              <div class="activity-feed" id="activity-feed"></div>
+            </section>
+            <section class="auction-tab-panel hidden" id="teams-panel">
+              <div class="teams-table" id="teams-table"></div>
+            </section>
+            <section class="auction-tab-panel hidden" id="trade-panel">
+              <div class="trade-panel">
+                <p class="trade-instructions" id="trade-instructions">Choose one of your players, then choose a player from another team to propose a one-for-one trade.</p>
+                <div id="trade-teams"></div>
+              </div>
+            </section>
+          </aside>
+        </div>
+      </section>
+      <div class="confirm-overlay hidden" id="trade-request-overlay" role="dialog" aria-modal="true" aria-labelledby="trade-request-title">
+        <div class="confirm-dialog">
+          <span class="section-kicker">TRADE REQUEST</span>
+          <h2 id="trade-request-title">Player trade proposed</h2>
+          <p id="trade-request-description"></p>
+          <div class="confirm-actions">
+            <button class="button button-secondary" id="decline-trade">Decline</button>
+            <button class="button button-primary" id="accept-trade">Accept trade</button>
+          </div>
+        </div>
+      </div>
+      <div class="confirm-overlay hidden" id="end-auction-confirm" role="dialog" aria-modal="true" aria-labelledby="end-auction-title">
+        <div class="confirm-dialog">
+          <span class="section-kicker">ADMIN CONTROL</span>
+          <h2 id="end-auction-title">End this auction?</h2>
+          <p>The auction will stop for everyone immediately. Completed sales and team purses will be kept.</p>
+          <div class="confirm-actions">
+            <button class="button button-secondary" id="keep-auction">Keep auction running</button>
+            <button class="button button-danger" id="confirm-end-auction">End auction</button>
+          </div>
+        </div>
+      </div>
+      <div class="toast hidden" id="toast" role="status"></div>
+    </main>
+  </body>
+</html>
